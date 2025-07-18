@@ -1,0 +1,21 @@
+SELECT
+  g.name AS grupo,
+  h.host AS equipamento,
+  it.name AS item,
+  SUM(hu.value) AS trafego_total
+FROM
+  history_uint hu
+JOIN items it ON hu.itemid = it.itemid
+JOIN hosts h ON it.hostid = h.hostid
+JOIN hosts_groups hg ON h.hostid = hg.hostid
+JOIN hstgrp g ON hg.groupid = g.groupid
+WHERE
+  g.name = 'Grupo de hosts'
+  AND it.name LIKE '%Bits received'
+  AND hu.clock BETWEEN $__unixEpochFrom() AND $__unixEpochTo()
+GROUP BY
+  g.name, h.host, it.name
+ORDER BY
+  trafego_total DESC
+LIMIT 15;
+ 
