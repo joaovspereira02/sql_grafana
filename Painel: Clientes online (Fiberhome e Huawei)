@@ -1,0 +1,156 @@
+WITH hosts_olt AS (
+    SELECT h.hostid, h.name AS olt_name
+    FROM hosts h
+    JOIN hosts_groups hg ON hg.hostid = h.hostid
+    JOIN hstgrp g ON g.groupid = hg.groupid
+    WHERE g.name = 'Network Provedor'
+      AND h.name = '$olt'  -- variável da OLT
+      AND h.status = 0
+),
+
+-- Todos os PONs e GPONs encontrados (unifica Fiberhome e Huawei)
+all_pon_numbers AS (
+    SELECT DISTINCT
+        -- Para Fiberhome, extrai PON x/y do key_ dentro dos colchetes
+        CASE
+            WHEN i.key_ LIKE 'OnOnuNum[PON %]' OR i.key_ LIKE 'OffOnuNum[PON %]' THEN
+                SUBSTRING_INDEX(SUBSTRING_INDEX(i.key_, '[', -1), ']', 1)
+            -- Para Huawei, extrai GPON x/y/z do nome do item
+            WHEN i.key_ LIKE 'OnlineOnuNum[%]' OR i.key_ LIKE 'OfflineOnuNum[%]' THEN
+                SUBSTRING(i.name, LOCATE('GPON', i.name), LENGTH(i.name))
+            ELSE NULL
+        END AS pon_number
+    FROM items i
+    JOIN hosts_olt ho ON ho.hostid = i.hostid
+    WHERE i.status = 0
+      AND (
+            i.key_ LIKE 'OnOnuNum[PON %]' OR i.key_ LIKE 'OffOnuNum[PON %]' -- Fiberhome
+         OR i.key_ LIKE 'OnlineOnuNum[%]' OR i.key_ LIKE 'OfflineOnuNum[%]' -- Huawei
+      )
+),
+
+-- Itens online Fiberhome
+items_online_fiberhome AS (
+    SELECT
+        i.itemid,
+        SUBSTRING_INDEX(SUBSTRING_INDEX(i.key_, '[', -1), ']', 1) AS pon_number
+    FROM items i
+    JOIN hosts_olt ho ON ho.hostid = i.hostid
+    WHERE i.key_ LIKE 'OnOnuNum[PON %]'
+      AND i.status = 0
+),
+
+-- Itens offline Fiberhome
+items_offline_fiberhome AS (
+    SELECT
+        i.itemid,
+        SUBSTRING_INDEX(SUBSTRING_INDEX(i.key_, '[', -1), ']', 1) AS pon_number
+    FROM items i
+    JOIN hosts_olt ho ON ho.hostid = i.hostid
+    WHERE i.key_ LIKE 'OffOnuNum[PON %]'
+      AND i.status = 0
+),
+
+-- Itens online Huawei
+items_online_huawei AS (
+    SELECT
+        i.itemid,
+        SUBSTRING(i.name, LOCATE('GPON', i.name), LENGTH(i.name)) AS pon_number
+    FROM items i
+    JOIN hosts_olt ho ON ho.hostid = i.hostid
+    WHERE i.key_ LIKE 'OnlineOnuNum[%]'
+      AND i.status = 0
+),
+
+-- Itens offline Huawei
+items_offline_huawei AS (
+    SELECT
+        i.itemid,
+        SUBSTRING(i.name, LOCATE('GPON', i.name), LENGTH(i.name)) AS pon_number
+    FROM items i
+    JOIN hosts_olt ho ON ho.hostid = i.hostid
+    WHERE i.key_ LIKE 'OfflineOnuNum[%]'
+      AND i.status = 0
+),
+
+-- Últimos valores online Fiberhome
+last_online_fiberhome AS (
+    SELECT
+        i.itemid,
+        h.value AS online_count
+    FROM items_online_fiberhome i
+    JOIN history_uint h ON h.itemid = i.itemid
+    WHERE h.clock = (
+        SELECT MAX(h2.clock)
+        FROM history_uint h2
+        WHERE h2.itemid = i.itemid
+    )
+),
+
+-- Últimos valores offline Fiberhome
+last_offline_fiberhome AS (
+    SELECT
+        i.itemid,
+        h.value AS offline_count
+    FROM items_offline_fiberhome i
+    JOIN history_uint h ON h.itemid = i.itemid
+    WHERE h.clock = (
+        SELECT MAX(h2.clock)
+        FROM history_uint h2
+        WHERE h2.itemid = i.itemid
+    )
+),
+
+-- Últimos valores online Huawei
+last_online_huawei AS (
+    SELECT
+        i.itemid,
+        h.value AS online_count
+    FROM items_online_huawei i
+    JOIN history_uint h ON h.itemid = i.itemid
+    WHERE h.clock = (
+        SELECT MAX(h2.clock)
+        FROM history_uint h2
+        WHERE h2.itemid = i.itemid
+    )
+),
+
+-- Últimos valores offline Huawei
+last_offline_huawei AS (
+    SELECT
+        i.itemid,
+        h.value AS offline_count
+    FROM items_offline_huawei i
+    JOIN history_uint h ON h.itemid = i.itemid
+    WHERE h.clock = (
+        SELECT MAX(h2.clock)
+        FROM history_uint h2
+        WHERE h2.itemid = i.itemid
+    )
+)
+
+-- Resultado final unificando Fiberhome e Huawei
+SELECT
+    apn.pon_number AS "PON/GPON",
+    -- soma online Fiberhome + Huawei
+    COALESCE(SUM(lf.online_count), 0) + COALESCE(SUM(lh.online_count), 0) AS "Clientes Online",
+    -- soma offline Fiberhome + Huawei
+    COALESCE(SUM(lof.offline_count), 0) + COALESCE(SUM(loh.offline_count), 0) AS "Clientes Offline"
+FROM all_pon_numbers apn
+
+LEFT JOIN last_online_fiberhome lf ON lf.itemid IN (
+    SELECT itemid FROM items_online_fiberhome WHERE pon_number = apn.pon_number
+)
+LEFT JOIN last_offline_fiberhome lof ON lof.itemid IN (
+    SELECT itemid FROM items_offline_fiberhome WHERE pon_number = apn.pon_number
+)
+LEFT JOIN last_online_huawei lh ON lh.itemid IN (
+    SELECT itemid FROM items_online_huawei WHERE pon_number = apn.pon_number
+)
+LEFT JOIN last_offline_huawei loh ON loh.itemid IN (
+    SELECT itemid FROM items_offline_huawei WHERE pon_number = apn.pon_number
+)
+
+WHERE apn.pon_number IN (${pon})  -- Aqui substitua pela variável/valores do filtro
+GROUP BY apn.pon_number
+ORDER BY apn.pon_number;
