@@ -1,0 +1,131 @@
+WITH hosts_olt AS (
+  SELECT 
+    h.hostid,
+    h.host
+  FROM hosts h
+  JOIN hosts_groups hg ON hg.hostid = h.hostid
+  JOIN hstgrp g ON g.groupid = hg.groupid
+  WHERE g.name = 'Network Provedor'
+    AND h.host = '$olt'
+    AND h.status = 0
+),
+
+-- Fiberhome
+items_power_failure_fh AS (
+  SELECT
+    i.hostid,
+    i.itemid,
+    SUBSTRING_INDEX(SUBSTRING_INDEX(i.name, 'PON ', -1), ' ', 1) AS pon_number
+  FROM items i
+  JOIN hosts_olt ho ON ho.hostid = i.hostid
+  WHERE i.name REGEXP '^PON [0-9]+\\/[0-9]+ ONUs Power Failure$'
+    AND i.status = 0
+),
+items_link_loss_fh AS (
+  SELECT
+    i.hostid,
+    i.itemid,
+    SUBSTRING_INDEX(SUBSTRING_INDEX(i.name, 'PON ', -1), ' ', 1) AS pon_number
+  FROM items i
+  JOIN hosts_olt ho ON ho.hostid = i.hostid
+  WHERE i.name REGEXP '^PON [0-9]+\\/[0-9]+ Link Loss$'
+    AND i.status = 0
+),
+items_onus_link_loss_fh AS (
+  SELECT
+    i.hostid,
+    i.itemid,
+    SUBSTRING_INDEX(SUBSTRING_INDEX(i.name, 'PON ', -1), ' ', 1) AS pon_number
+  FROM items i
+  JOIN hosts_olt ho ON ho.hostid = i.hostid
+  WHERE i.name REGEXP '^PON [0-9]+\\/[0-9]+ ONUs Link Loss$'
+    AND i.status = 0
+),
+
+-- Huawei
+items_dying_gasp_hw AS (
+  SELECT
+    i.hostid,
+    i.itemid,
+    SUBSTRING_INDEX(SUBSTRING_INDEX(i.name, 'Last down cause: GPON ', -1), ':', 1) AS pon_number
+  FROM items i
+  JOIN hosts_olt ho ON ho.hostid = i.hostid
+  WHERE i.key_ LIKE 'DyingGaspOnuNum[%]'
+    AND i.name LIKE 'Last down cause: GPON %: ONUs em Dying Gasp'
+    AND i.status = 0
+),
+items_los_hw AS (
+  SELECT
+    i.hostid,
+    i.itemid,
+    SUBSTRING_INDEX(SUBSTRING_INDEX(i.name, 'Last down cause: GPON ', -1), ':', 1) AS pon_number
+  FROM items i
+  JOIN hosts_olt ho ON ho.hostid = i.hostid
+  WHERE i.key_ LIKE 'LosOnuNum[%]'
+    AND i.name LIKE 'Last down cause: GPON %: ONUs em LOS'
+    AND i.status = 0
+),
+items_losilobi_hw AS (
+  SELECT
+    i.hostid,
+    i.itemid,
+    SUBSTRING_INDEX(SUBSTRING_INDEX(i.name, 'Last down cause: GPON ', -1), ':', 1) AS pon_number
+  FROM items i
+  JOIN hosts_olt ho ON ho.hostid = i.hostid
+  WHERE i.key_ LIKE 'LosiOnuNum[%]'
+    AND i.name LIKE 'Last down cause: GPON %: ONUs em LOSi / LOBi'
+    AND i.status = 0
+),
+
+last_values AS (
+  SELECT h1.itemid, h1.value
+  FROM history_uint h1
+  INNER JOIN (
+    SELECT itemid, MAX(clock) AS max_clock
+    FROM history_uint
+    GROUP BY itemid
+  ) h2 ON h1.itemid = h2.itemid AND h1.clock = h2.max_clock
+),
+
+all_pons AS (
+  SELECT DISTINCT pon_number FROM items_power_failure_fh
+  UNION
+  SELECT DISTINCT pon_number FROM items_link_loss_fh
+  UNION
+  SELECT DISTINCT pon_number FROM items_onus_link_loss_fh
+  UNION
+  SELECT DISTINCT pon_number FROM items_dying_gasp_hw
+  UNION
+  SELECT DISTINCT pon_number FROM items_los_hw
+  UNION
+  SELECT DISTINCT pon_number FROM items_losilobi_hw
+)
+
+SELECT
+  ap.pon_number AS `PON/GPON`,
+  COALESCE(lv_pf.value, 0) AS `Power Failure (Fiberhome)`,
+  COALESCE(lv_ll.value, 0) AS `Link Loss (Fiberhome)`,
+  COALESCE(lv_oll.value, 0) AS `ONUs Link Loss (Fiberhome)`,
+
+  COALESCE(lv_dg.value, 0) AS `Dying Gasp (Huawei)`,
+  COALESCE(lv_los.value, 0) AS `LOS (Huawei)`,
+  COALESCE(lv_losi.value, 0) AS `LOSi / LOBi (Huawei)`
+FROM all_pons ap
+LEFT JOIN items_power_failure_fh ipf ON ipf.pon_number = ap.pon_number
+LEFT JOIN last_values lv_pf ON lv_pf.itemid = ipf.itemid
+
+LEFT JOIN items_link_loss_fh ill ON ill.pon_number = ap.pon_number
+LEFT JOIN last_values lv_ll ON lv_ll.itemid = ill.itemid
+
+LEFT JOIN items_onus_link_loss_fh ioll ON ioll.pon_number = ap.pon_number
+LEFT JOIN last_values lv_oll ON lv_oll.itemid = ioll.itemid
+
+LEFT JOIN items_dying_gasp_hw idg ON idg.pon_number = ap.pon_number
+LEFT JOIN last_values lv_dg ON lv_dg.itemid = idg.itemid
+
+LEFT JOIN items_los_hw ilhw ON ilhw.pon_number = ap.pon_number
+LEFT JOIN last_values lv_los ON lv_los.itemid = ilhw.itemid
+
+LEFT JOIN items_losilobi_hw illhw ON illhw.pon_number = ap.pon_number
+LEFT JOIN last_values lv_losi ON lv_losi.itemid = illhw.itemid
+ORDER BY ap.pon_number;
