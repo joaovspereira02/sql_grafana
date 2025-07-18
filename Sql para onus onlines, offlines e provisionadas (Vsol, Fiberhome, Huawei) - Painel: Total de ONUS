@@ -1,0 +1,70 @@
+WITH hosts_olt AS (
+    SELECT h.hostid
+    FROM hosts h
+    JOIN hosts_groups hg ON hg.hostid = h.hostid
+    JOIN hstgrp g ON g.groupid = hg.groupid
+    WHERE h.name = '$olt'
+      AND h.status = 0
+),
+latest_values AS (
+    SELECT h.itemid, h.value, h.clock
+    FROM history_uint h
+    JOIN (
+        SELECT itemid, MAX(clock) AS max_clock
+        FROM history_uint
+        GROUP BY itemid
+    ) AS max_times ON h.itemid = max_times.itemid AND h.clock = max_times.max_clock
+),
+items_filtered AS (
+    SELECT i.itemid, i.key_, i.name, i.hostid
+    FROM items i
+    JOIN hosts_olt ho ON ho.hostid = i.hostid
+    WHERE i.status = 0
+      AND (
+          -- Fiberhome
+          i.key_ LIKE 'OnOnuNum[PON%'
+          OR i.key_ LIKE 'OffOnuNum[PON%'
+          OR i.key_ LIKE 'oltPonAuthOnuNum[%]'
+          -- Huawei
+          OR i.key_ LIKE 'OnlineOnuNum[%]'
+          OR i.key_ LIKE 'OfflineOnuNum[%]'
+          OR i.key_ LIKE 'TotalClientes[%]'
+          -- VSOL
+          OR i.key_ LIKE '1.3.6.1.4.1.37950.1.1.5.12.1.27.1.3.[%'
+          OR i.key_ LIKE 'calculado.onus.off.[%'
+          OR i.key_ LIKE '1.3.6.1.4.1.37950.1.1.5.12.1.27.1.2.[%'
+      )
+)
+SELECT
+    SUM(
+        CASE
+            -- Online: Fiberhome, Huawei, VSOL
+            WHEN i.key_ LIKE 'OnOnuNum[PON%'
+              OR i.key_ LIKE 'OnlineOnuNum[%]'
+              OR i.key_ LIKE '1.3.6.1.4.1.37950.1.1.5.12.1.27.1.3.[%'
+                THEN COALESCE(lv.value, 0)
+            ELSE 0
+        END
+    ) AS total_onus_online,
+    SUM(
+        CASE
+            -- Offline: Fiberhome, Huawei, VSOL
+            WHEN i.key_ LIKE 'OffOnuNum[PON%'
+              OR i.key_ LIKE 'OfflineOnuNum[%]'
+              OR i.key_ LIKE 'calculado.onus.off.[%'
+                THEN COALESCE(lv.value, 0)
+            ELSE 0
+        END
+    ) AS total_onus_offline,
+    SUM(
+        CASE
+            -- Provisionadas: Fiberhome, Huawei, VSOL
+            WHEN i.key_ LIKE 'oltPonAuthOnuNum[%]'
+              OR i.key_ LIKE 'TotalClientes[%]'
+              OR i.key_ LIKE '1.3.6.1.4.1.37950.1.1.5.12.1.27.1.2.[%'
+                THEN COALESCE(lv.value, 0)
+            ELSE 0
+        END
+    ) AS total_onus_autenticadas
+FROM items_filtered i
+LEFT JOIN latest_values lv ON lv.itemid = i.itemid;
